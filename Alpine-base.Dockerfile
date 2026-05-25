@@ -47,7 +47,7 @@ RUN apk update && apk upgrade && \
     python3 \
     py3-pip \
     # Docker
-    docker
+    docker \
     # DHCP client + openrc
     dhcpcd \
     openrc \
@@ -110,6 +110,10 @@ ln -sf /etc/init.d/dhcpcd /etc/runlevels/default/dhcpcd
 
 # Same for sshd if we want it on boot
 ln -sf /etc/init.d/sshd /etc/runlevels/default/sshd
+
+# Wire up containerd and docker to the default runlevel
+ln -sf /etc/init.d/containerd /etc/runlevels/default/containerd
+ln -sf /etc/init.d/docker /etc/runlevels/default/docker
 
 # Mark fixes as completed
 echo "Post-extraction fixes applied on $(date)" > /etc/droidspaces
