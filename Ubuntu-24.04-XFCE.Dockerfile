@@ -118,6 +118,10 @@ RUN apt-get update && \
     valgrind \
     strace \
     ltrace \
+    # Audio
+    pulseaudio \
+    pulseaudio-utils \
+    pavucontrol \
     # XFCE Desktop Environment and essential tools
     xfce4 \
     desktop-base \

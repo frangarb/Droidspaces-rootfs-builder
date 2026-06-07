@@ -108,6 +108,10 @@ RUN apt-get update && \
     nilfs-tools \
     udftools \
     f2fs-tools \
+    # Audio
+    pulseaudio \
+    pulseaudio-utils \
+    pavucontrol \
     # XFCE Desktop Environment and essential tools
     xfce4 \
     desktop-base \
