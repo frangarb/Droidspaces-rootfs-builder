@@ -206,5 +206,18 @@
     "version": "v20260607-171942",
     "build_date": "20260607",
     "author": "Droidspaces developers"
+  },
+  {
+    "name": "OpenWrt 24.10 - Minimal (iptables-legacy)",
+    "distro": "OpenWrt",
+    "description": "Minimal OpenWrt 24.10 router rootfs built for Android kernels: nftables/fw4 stripped out in favor of iptables-legacy + fw3, with full firewall (NAT, zones, masquerade) working. Tuned for VirtualAP's managed-hotspot (container) mode.",
+    "architecture": "aarch64",
+    "file": "OpenWrt-24.10-Minimal",
+    "download_url": "",
+    "sha256": "",
+    "size_bytes": 0,
+    "version": "",
+    "build_date": "",
+    "author": "Droidspaces developers"
   }
 ]
