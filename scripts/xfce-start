@@ -1,56 +1,109 @@
 #!/bin/sh
+set -eu
 
 ENV_FILE=/run/droidspaces.env
 CONFIG=/run/droidspaces/container.config
 
-# 1. Parse Initial Environment Variables
+# Export variables from the environment file if it exists.
 if [ -f "$ENV_FILE" ]; then
+    set -a
     . "$ENV_FILE"
-else
-    export DISPLAY=:5
-    if grep -q 'enable_pulseaudio=1' "$CONFIG" 2>/dev/null; then
-        export PULSE_SERVER=unix:/tmp/.pulse-socket
-    fi
-    if grep -q 'enable_virgl=1' "$CONFIG" 2>/dev/null; then
-        export GALLIUM_DRIVER=virpipe
-    fi
+    set +a
 fi
 
-# 2. Check User and Launch Desktop
-if [ -n "$XFCE_USER" ] && [ "$XFCE_USER" != "root" ]; then
+# Set default local X11 display if undefined.
+: "${DISPLAY:=:5}"
+export DISPLAY
 
-    # Fetch the target user's numeric UID and prepare XDG runtime dir
-    USER_UID=$(id -u "$XFCE_USER")
+# Apply audio and graphics configurations based on container settings.
+if grep -q 'enable_pulseaudio=1' "$CONFIG" 2>/dev/null; then
+    : "${PULSE_SERVER:=unix:/tmp/.pulse-socket}"
+    export PULSE_SERVER
+fi
+if grep -q 'enable_virgl=1' "$CONFIG" 2>/dev/null; then
+    : "${GALLIUM_DRIVER:=virpipe}"
+    export GALLIUM_DRIVER
+fi
+
+# Extract the display number to define X11 socket and lock paths.
+DISPLAY_NUM=$(printf '%s' "$DISPLAY" | sed 's/^://; s/\..*$//')
+X11_SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
+X11_LOCK="/tmp/.X${DISPLAY_NUM}-lock"
+
+# Helper: Safely change ownership of existing files/sockets without following symlinks.
+safe_chown() {
+    if [ -e "$2" ] && [ ! -L "$2" ]; then
+        chown "$1" "$2"
+    fi
+}
+
+# Configure environment and launch desktop for a non-root user.
+if [ -n "${XFCE_USER:-}" ] && [ "$XFCE_USER" != "root" ]; then
+    if ! USER_UID=$(id -u "$XFCE_USER" 2>/dev/null); then
+        echo "Error: XFCE_USER '$XFCE_USER' does not exist" >&2
+        exit 1
+    fi
+
+    # Resolve the numeric primary GID for POSIX-compliant ownership assignment.
+    if ! USER_GID=$(id -g "$XFCE_USER" 2>/dev/null); then
+        echo "Error: cannot resolve GID for '$XFCE_USER'" >&2
+        exit 1
+    fi
+    OWNER="$XFCE_USER:$USER_GID"
     TARGET_XDG="/run/user/$USER_UID"
 
-    # Unconditionally create/heal the runtime directory and force correct permissions
+    # Initialize and secure the user's XDG runtime directory.
     mkdir -p "$TARGET_XDG"
-    chown "$XFCE_USER" "$TARGET_XDG"
+    chown "$OWNER" "$TARGET_XDG"
     chmod 700 "$TARGET_XDG"
 
-    # Grant ownership of sockets and X11 lock file to the target user
-    [ -S /tmp/.X11-unix/X5 ] && chown "$XFCE_USER" /tmp/.X11-unix/X5
-    [ -f /tmp/.X5-lock ]      && chown "$XFCE_USER" /tmp/.X5-lock
-    [ -S /tmp/.pulse-socket ] && chown "$XFCE_USER" /tmp/.pulse-socket
-    [ -S /tmp/.virgl_test ]   && chown "$XFCE_USER" /tmp/.virgl_test
+    # Assign socket ownership to the user.
+    safe_chown "$OWNER" "$X11_SOCKET"
+    safe_chown "$OWNER" "$X11_LOCK"
+    safe_chown "$OWNER" /tmp/.pulse-socket
+    safe_chown "$OWNER" /tmp/.virgl_test
 
-    # Build dynamic env whitelist, excluding root-specific or session-poisoning vars
-    SAFE_ENV=$(env | awk -F= '{print $1}' \
+    # Build a comma-separated list of forwardable env vars: valid POSIX identifier
+    # names, minus session vars that su -l should set itself.
+
+    SAFE_ENV=$(env | sed 's/=.*//' \
+        | grep -E '^[a-zA-Z_][a-zA-Z0-9_]*$' \
         | grep -vE '^(HOME|USER|LOGNAME|PWD|SHELL|XDG_RUNTIME_DIR|MAIL|SHLVL|_)$' \
         | tr '\n' ',' | sed 's/,$//')
 
-    # Drop privileges and launch XFCE under a clean login shell
-    exec su -l -w "$SAFE_ENV" "$XFCE_USER" -c '
-        export XDG_RUNTIME_DIR='"$TARGET_XDG"'
-        exec /usr/bin/startxfce4'
-else
-    # Warn and fall back to root execution
-    if [ "$XFCE_USER" = "root" ]; then
-        echo "Warning: XFCE_USER=root, running desktop as root" >&2
+    # Launch XFCE using util-linux 'su' if the whitelist flag (-w) is supported.
+    if su --help 2>&1 | grep -Eq -- '(^|[[:space:]])(-w|--whitelist-environment)([[:space:]]|,|$)'; then
+        exec su -l -w "$SAFE_ENV" "$XFCE_USER" -c '
+            export XDG_RUNTIME_DIR='"$TARGET_XDG"'
+            exec /usr/bin/startxfce4'
     fi
 
-    mkdir -p /run/user/0
-    chmod 700 /run/user/0
-    export XDG_RUNTIME_DIR=/run/user/0
-    exec /usr/bin/startxfce4
+    # Fallback for BusyBox/Alpine 'su' (no -w). Names are already validated as POSIX
+    # identifiers; the single-quote escaping below keeps values injection-safe -- keep it.
+
+    EXPORTS="export XDG_RUNTIME_DIR='$TARGET_XDG';"
+    OLD_IFS=$IFS
+    IFS=,
+    for var in $SAFE_ENV; do
+        if [ -z "$var" ]; then
+            continue
+        fi
+        eval "val=\${$var:-}"
+        esc=$(printf '%s' "$val" | sed "s/'/'\\\\''/g")
+        EXPORTS="$EXPORTS export $var='$esc';"
+    done
+    IFS=$OLD_IFS
+    exec su -l "$XFCE_USER" -c "$EXPORTS exec /usr/bin/startxfce4"
 fi
+
+# Fallback: Configure environment and launch desktop as root.
+if [ "${XFCE_USER:-}" = "root" ]; then
+    echo "Warning: XFCE_USER=root, running desktop as root" >&2
+else
+    echo "Warning: XFCE_USER is unset or empty, falling back to root" >&2
+fi
+
+mkdir -p /run/user/0
+chmod 700 /run/user/0
+export XDG_RUNTIME_DIR=/run/user/0
+exec /usr/bin/startxfce4
